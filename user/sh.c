@@ -263,63 +263,64 @@ main(int argc, char *argv[])
 
   // 🟢 STEP 2/3: interactive shell 模式
   while (1) {
-  // ① BEFORE prompt
-  reap_bg();
+    // ① BEFORE prompt
+    reap_bg();
 
-  write(1, "$ ", 2);
-  memset(buf, 0, sizeof(buf));
-  gets(buf, sizeof(buf));
-  if (buf[0] == 0)
-    break;
+    write(1, "$ ", 2);
+    memset(buf, 0, sizeof(buf));
+    gets(buf, sizeof(buf));
+    if (buf[0] == 0)
+      break;
 
-  // ② AFTER input (Case 2 用到這個時機)
-  reap_bg();
+    // ② AFTER input (Case 2 用到這個時機)
+    reap_bg();
 
-  // built-in cd
-  if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
-    buf[strlen(buf) - 1] = 0;
-    if (chdir(buf + 3) < 0)
-      fprintf(2, "cannot cd %s\n", buf + 3);
-    continue;
-  }
+    // built-in cd
+    if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
+      buf[strlen(buf) - 1] = 0;
+      if (chdir(buf + 3) < 0)
+        fprintf(2, "cannot cd %s\n", buf + 3);
+      continue;
+    }
 
-  if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
-    jobs_print();
-    reap_bg();  // 清理 zombie
-    continue;   // 不要 fork
-  }
+    if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
+      jobs_print();
+      reap_bg();  // 清理 zombie
+      continue;   // 不要 fork
+    }
 
-  struct cmd *cmd = parsecmd(buf);
-  int pid = fork1();
-  if (pid == 0) {
-    runcmd(cmd);              // 子行程執行
-  } else {
-    if (cmd->type == BACK) {
-      printf("[%d]\n", pid);  // 背景：只印 pid，不等待
-      jobs_add(pid);
+    struct cmd *cmd = parsecmd(buf);
+    int pid = fork1();
+    if (pid == 0) {
+      runcmd(cmd);              // 子行程執行
     } else {
-      // ✅ 前景：用 non-blocking 方式只等這個 pid
-      for (;;) {
-        int st;
-        int p = wait_noblock(&st);
-        if (p == pid) {
-          // 等到前景子行程結束 → 跳出
-          break;
-        } else if (p > 0) {
-          // 有背景 job 結束 → 立刻印，避免被吃掉
-          printf("[bg %d] exited with status %d\n", p, st);
-          jobs_del(p);
-        } else {
-          // 沒有任何 zombie → 稍微讓出 CPU
-          sleep(1);
+      if (cmd->type == BACK) {
+        printf("[%d]\n", pid);  // 背景：只印 pid，不等待
+        jobs_add(pid);
+      } else {
+        // ✅ 前景：用 non-blocking 方式只等這個 pid
+        for (;;) {
+          int st;
+          int p = wait_noblock(&st);
+          if (p == pid) {
+            // 等到前景子行程結束 → 跳出
+            break;
+          } else if (p > 0) {
+            // 有背景 job 結束 → 立刻印，避免被吃掉
+            printf("[bg %d] exited with status %d\n", p, st);
+            jobs_del(p);
+          } else {
+            // 沒有任何 zombie → 稍微讓出 CPU
+            sleep(1);
+          }
         }
       }
     }
-  }
 
-  // ③ AFTER command finishes
-  reap_bg();
-}
+    // ③ AFTER command finishes
+    sleep(1);
+    reap_bg();
+  }
 
 
   exit(0);
