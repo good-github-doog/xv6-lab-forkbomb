@@ -3,6 +3,19 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
+#include "kernel/param.h"
+int
+strncmp(const char *p, const char *q, uint n)
+{
+  while(n > 0 && *p && *p == *q){
+    n--;
+    p++;
+    q++;
+  }
+  if(n == 0)
+    return 0;
+  return (uchar)*p - (uchar)*q;
+}
 
 // Parsed command representation
 #define EXEC  1
@@ -52,7 +65,16 @@ struct backcmd {
 int fork1(void);  // Fork but panics on failure.
 void panic(char*);
 struct cmd *parsecmd(char*);
+static int jobs[NPROC];
 void runcmd(struct cmd*) __attribute__((noreturn));
+static void reap_bg(void);
+
+// Step 3 jobs prototypes
+static void jobs_add(int pid);
+static void jobs_del(int pid);
+static void jobs_print(void);
+
+
 
 // Execute cmd.  Never returns.
 void
@@ -78,6 +100,7 @@ runcmd(struct cmd *cmd)
       exit(1);
     exec(ecmd->argv[0], ecmd->argv);
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
+    write(2, "", 0);
     break;
 
   case REDIR:
@@ -123,54 +146,186 @@ runcmd(struct cmd *cmd)
     break;
 
   case BACK:
+    // 不要在這裡 fork！只要直接跑子命令
     bcmd = (struct backcmd*)cmd;
-    if(fork1() == 0)
-      runcmd(bcmd->cmd);
-    break;
+    runcmd(bcmd->cmd);
+    break; // 不會到這裡，因為上面 runcmd 會 noreturn
   }
   exit(0);
 }
 
-int
-getcmd(char *buf, int nbuf)
-{
-  write(2, "$ ", 2);
-  memset(buf, 0, nbuf);
-  gets(buf, nbuf);
-  if(buf[0] == 0) // EOF
-    return -1;
-  return 0;
-}
+  int getcmd(char *buf, int nbuf)
+  {
+    // BEFORE
+    reap_bg();              // ① 先清 zombie
+
+    //write(2, "$ ", 2);      // 顯示 prompt
+    memset(buf, 0, nbuf);
+    gets(buf, nbuf);
+
+    if (buf[0] == 0)        // EOF
+      return -1;
+
+    // AFTER
+    reap_bg();              // ② 再清一次剛結束的背景程式
+    return 0;
+  }
+
+
 
 int
-main(void)
+main(int argc, char *argv[])
 {
   static char buf[100];
   int fd;
 
   // Ensure that three file descriptors are open.
-  while((fd = open("console", O_RDWR)) >= 0){
-    if(fd >= 3){
+  while ((fd = open("console", O_RDWR)) >= 0) {
+    if (fd >= 3) {
       close(fd);
       break;
     }
   }
 
-  // Read and run input commands.
-  while(getcmd(buf, sizeof(buf)) >= 0){
-    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      buf[strlen(buf)-1] = 0;  // chop \n
-      if(chdir(buf+3) < 0)
-        fprintf(2, "cannot cd %s\n", buf+3);
-      continue;
+  // 🟢 STEP 4: 若傳入 sh script.sh → 批次模式
+  if (argc == 2) {
+    int f = open(argv[1], O_RDONLY);
+    if (f < 0) {
+      fprintf(2, "sh: cannot open %s\n", argv[1]);
+      exit(1);
     }
-    if(fork1() == 0)
-      runcmd(parsecmd(buf));
-    wait(0);
+
+    char c;
+    int i = 0;
+    while (read(f, &c, 1) == 1) {
+      if (c == '\n' || c == '\r') {
+        buf[i] = 0;
+        if (i > 0) {
+          // 🟢 先檢查是否是內建指令 jobs
+          if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
+            jobs_print();
+            reap_bg();
+          } else {
+            struct cmd *cmd = parsecmd(buf);
+            int pid = fork1();
+            if (pid == 0) {
+              runcmd(cmd);
+            } else {
+              if (cmd->type == BACK) {
+                printf("[%d]\n", pid);
+                jobs_add(pid);
+              } else {
+                int wpid;
+                while ((wpid = wait(0)) != pid && wpid != -1);
+              }
+            }
+            reap_bg();
+          }
+        }
+        i = 0;
+      } else {
+        buf[i++] = c;
+        if (i >= sizeof(buf) - 1)
+          i = 0;
+      }
+    }
+
+    // 🟢 處理最後一行（沒有換行的情況）
+    if (i > 0) {
+      buf[i] = 0;
+
+      if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
+        jobs_print();
+        reap_bg();
+      } else {
+        struct cmd *cmd = parsecmd(buf);
+        int pid = fork1();
+        if (pid == 0) {
+          runcmd(cmd);
+        } else {
+          if (cmd->type == BACK) {
+            printf("[%d]\n", pid);
+            jobs_add(pid);
+          } else {
+            int wpid;
+            while ((wpid = wait(0)) != pid && wpid != -1);
+          }
+        }
+        reap_bg();
+      }
+    }
+
+    close(f);
+    exit(0);
   }
+
+
+
+  // 🟢 STEP 2/3: interactive shell 模式
+  while (1) {
+  // ① BEFORE prompt
+  reap_bg();
+
+  write(1, "$ ", 2);
+  memset(buf, 0, sizeof(buf));
+  gets(buf, sizeof(buf));
+  if (buf[0] == 0)
+    break;
+
+  // ② AFTER input (Case 2 用到這個時機)
+  reap_bg();
+
+  // built-in cd
+  if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
+    buf[strlen(buf) - 1] = 0;
+    if (chdir(buf + 3) < 0)
+      fprintf(2, "cannot cd %s\n", buf + 3);
+    continue;
+  }
+
+  if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
+    jobs_print();
+    reap_bg();  // 清理 zombie
+    continue;   // 不要 fork
+  }
+
+  struct cmd *cmd = parsecmd(buf);
+  int pid = fork1();
+  if (pid == 0) {
+    runcmd(cmd);              // 子行程執行
+  } else {
+    if (cmd->type == BACK) {
+      printf("[%d]\n", pid);  // 背景：只印 pid，不等待
+      jobs_add(pid);
+    } else {
+      // ✅ 前景：用 non-blocking 方式只等這個 pid
+      for (;;) {
+        int st;
+        int p = wait_noblock(&st);
+        if (p == pid) {
+          // 等到前景子行程結束 → 跳出
+          break;
+        } else if (p > 0) {
+          // 有背景 job 結束 → 立刻印，避免被吃掉
+          printf("[bg %d] exited with status %d\n", p, st);
+          jobs_del(p);
+        } else {
+          // 沒有任何 zombie → 稍微讓出 CPU
+          sleep(1);
+        }
+      }
+    }
+  }
+
+  // ③ AFTER command finishes
+  reap_bg();
+}
+
+
   exit(0);
 }
+
+
 
 void
 panic(char *s)
@@ -491,4 +646,35 @@ nulterminate(struct cmd *cmd)
     break;
   }
   return cmd;
+}
+
+// flag!
+static void reap_bg(void)
+{
+  int st, pid;
+  while ((pid = wait_noblock(&st)) > 0) {
+    jobs_del(pid);                     // 🟢 新增：移除結束的背景 pid
+    printf("[bg %d] exited with status %d\n", pid, st);
+  }
+}
+
+
+
+
+//flag!
+static void jobs_add(int pid) {
+  if (pid > 0 && pid < NPROC)
+    jobs[pid] = 1;
+}
+
+static void jobs_del(int pid) {
+  if (pid > 0 && pid < NPROC)
+    jobs[pid] = 0;
+}
+
+static void jobs_print(void) {
+  for (int i = 1; i < NPROC; i++) {
+    if (jobs[i])
+      printf("%d\n", i);
+  }
 }
