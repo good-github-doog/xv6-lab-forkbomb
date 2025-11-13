@@ -158,23 +158,24 @@ runcmd(struct cmd *cmd)
   exit(0);
 }
 
-  int getcmd(char *buf, int nbuf)
-  {
-    // BEFORE
-    reap_bg();              // ① 先清 zombie
+int getcmd(char *buf, int nbuf)
+{
+  // BEFORE
+  reap_bg();              // ① 先清 zombie
 
-    if (interactive_mode)
-      write(2, "$ ", 2);
-    memset(buf, 0, nbuf);
-    gets(buf, nbuf);
+  if (interactive_mode)
+    write(2, "$ ", 2);
+  memset(buf, 0, nbuf);
+  gets(buf, nbuf);
 
-    if (buf[0] == 0)        // EOF
-      return -1;
+  if (buf[0] == 0)        // EOF
+    return -1;
 
-    // AFTER
-    //reap_bg();              // ② 再清一次剛結束的背景程式
-    return 0;
-  }
+  // AFTER
+  if(!interactive_mode)
+    reap_bg();              // ② 再清一次剛結束的背景程式
+  return 0;
+}
 
 
 
@@ -607,6 +608,7 @@ static void reap_bg(void)
     jobs_del(pid);                     // 🟢 新增：移除結束的背景 pid
   }
 }
+
 
 
 
