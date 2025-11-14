@@ -238,6 +238,8 @@ main(int argc, char *argv[])
       if (cmd->type == BACK) {
         printf("[%d]\n", pid);
         jobs_add(pid);
+        sleep(1);
+        reap_bg();
       } else {
         // ✅ non-blocking wait，保留 Step 2 修正
         for (;;) {
@@ -253,8 +255,7 @@ main(int argc, char *argv[])
     }
 
     // ✅ Step 2 case 5 修正：延遲讓 exec failed 顯示
-    sleep(1);
-    reap_bg();
+    
   }
 
   if (!interactive_mode) {
