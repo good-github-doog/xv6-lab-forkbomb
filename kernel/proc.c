@@ -713,3 +713,5 @@ int wait_noblock(uint64 exit_status) {
   return 0; // no zombie child
 }
 
+// question1: user和kernel的虛擬地址是分離的，exit_status是在user program裡，pp -> state在kernel裡，所以要用copyout()把資料從kernel copy到user
+
