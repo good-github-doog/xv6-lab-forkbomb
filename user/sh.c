@@ -149,7 +149,12 @@ runcmd(struct cmd *cmd)
     wait(0);
     break;
 
-  case BACK:
+    // question3:
+    // 原本 xv6 在 runcmd() 的 BACK case 裡會再 fork 一次，
+    // 造成 BACK 指令建立兩個 process。
+    // 讓 background job 只在 main() fork 一次，
+    // runcmd() 不再 fork，因此就不會多生一個 child 或 zombie。
+    case BACK:
     // 不要在這裡 fork！只要直接跑子命令
     bcmd = (struct backcmd*)cmd;
     runcmd(bcmd->cmd);
@@ -222,6 +227,8 @@ main(int argc, char *argv[])
       continue;
     }
 
+    // question4: jobs後面沒有參數，會直接按enter，所以要查下一個字元是不是\n或\0
+    // cd後面一定是空白 buf[0]=='c' && buf[1]=='d' && buf[2]==' '
     // built-in jobs
     if (strncmp(buf, "jobs", 4) == 0 && (buf[4] == '\n' || buf[4] == 0)) {
       
@@ -231,7 +238,7 @@ main(int argc, char *argv[])
     }
 
     struct cmd *cmd = parsecmd(buf);
-    int pid = fork1();
+    int pid = fork1(); // question3: 在這裡 fork！
     if (pid == 0) {
       runcmd(cmd);
     } else {
